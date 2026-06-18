@@ -4176,6 +4176,7 @@ function parseWhatsAppMessages(text) {
 
 async function handleWAFile(file) {
   if (!file) return;
+  window._waLastFile = file;
 
   const resultsDiv = document.getElementById('wa-results');
   resultsDiv.innerHTML = `
@@ -4208,16 +4209,81 @@ async function handleWAFile(file) {
     return;
   }
 
-  // Identificăm mesajele noi față de ultima importare
-  const lastTs = parseInt(localStorage.getItem(WA_TS_KEY) || '0');
-  const newMessages = lastTs > 0
-    ? allMessages.filter(m => m.tsMs > lastTs)
-    : allMessages;
+  // Afișăm selectorul de dată înainte de filtrare
+  const firstTs = allMessages[0].tsMs;
+  const lastFileTs = allMessages[allMessages.length - 1].tsMs;
+  const lastImportTs = parseInt(localStorage.getItem(WA_TS_KEY) || '0');
 
-  // Filtrăm mesajele de sistem WhatsApp (nu au conținut util)
+  window._waAllMessages = allMessages;
+
+  const defFrom = new Date(lastImportTs > 0 ? lastImportTs : firstTs);
+  const defaultFromStr = `${defFrom.getFullYear()}-${String(defFrom.getMonth()+1).padStart(2,'0')}-${String(defFrom.getDate()).padStart(2,'0')}`;
+  const firstDateDisp = new Date(firstTs).toLocaleDateString('ro-RO');
+  const lastDateDisp = new Date(lastFileTs).toLocaleDateString('ro-RO');
+
+  resultsDiv.innerHTML = `
+    <div class="card">
+      <div class="card-header" style="background:var(--accent-light);">
+        <div class="card-title" style="color:var(--accent);">📊 Fișier încărcat — ${allMessages.length} mesaje</div>
+        <div style="font-size:12px;color:var(--text2);">Perioadă fișier: ${firstDateDisp} – ${lastDateDisp}</div>
+      </div>
+      <div class="card-body">
+        <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;">Analizează mesajele de la:</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
+          ${lastImportTs > 0 ? `
+          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:2px solid var(--accent);border-radius:var(--radius-sm);cursor:pointer;background:var(--accent-light);">
+            <input type="radio" name="wa-from" value="import" checked style="margin-top:3px;">
+            <div>
+              <div style="font-weight:600;font-size:13px;">De la ultima importare</div>
+              <div style="font-size:12px;color:var(--text2);">${new Date(lastImportTs).toLocaleString('ro-RO')}</div>
+            </div>
+          </label>` : ''}
+          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;">
+            <input type="radio" name="wa-from" value="custom" ${lastImportTs === 0 ? 'checked' : ''} style="margin-top:3px;"
+              onchange="document.getElementById('wa-custom-date').disabled=false;document.getElementById('wa-custom-date').focus();">
+            <div>
+              <div style="font-weight:600;font-size:13px;">De la o dată specificată</div>
+              <input type="date" id="wa-custom-date" value="${defaultFromStr}" ${lastImportTs > 0 ? 'disabled' : ''}
+                style="margin-top:6px;font-size:13px;padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);"
+                onclick="this.closest('label').querySelector('[type=radio]').checked=true;this.disabled=false;">
+            </div>
+          </label>
+          <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;">
+            <input type="radio" name="wa-from" value="all" style="margin-top:3px;">
+            <div>
+              <div style="font-weight:600;font-size:13px;">Tot documentul</div>
+              <div style="font-size:12px;color:var(--text2);">Procesează toate cele ${allMessages.length} mesaje din fișier</div>
+            </div>
+          </label>
+        </div>
+        <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="continueWAImport()">
+          Continuă →
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function continueWAImport() {
+  const allMessages = window._waAllMessages || [];
+  if (!allMessages.length) return;
+
+  const lastImportTs = parseInt(localStorage.getItem(WA_TS_KEY) || '0');
+  const option = document.querySelector('input[name="wa-from"]:checked')?.value || 'all';
+
+  let fromTs = 0;
+  if (option === 'import') {
+    fromTs = lastImportTs;
+  } else if (option === 'custom') {
+    const dateVal = document.getElementById('wa-custom-date')?.value;
+    fromTs = dateVal ? new Date(dateVal).getTime() : 0;
+  }
+
+  const newMessages = fromTs > 0 ? allMessages.filter(m => m.tsMs > fromTs) : allMessages;
+
   const userMessages = newMessages.filter(m =>
     m.message &&
-    !m.message.startsWith('‎') &&  // mesaje sistem iOS
+    !m.message.startsWith('‎') &&
     !m.message.includes('s-a alăturat') &&
     !m.message.includes('a plecat') &&
     !m.message.includes('a adăugat') &&
@@ -4228,65 +4294,94 @@ async function handleWAFile(file) {
 
   const totalAll = allMessages.length;
   const totalNew = userMessages.length;
-  const newestTs = allMessages.length ? allMessages[allMessages.length - 1].tsMs : 0;
-  const oldestNew = userMessages.length ? userMessages[0].ts.toLocaleDateString('ro-RO') : '—';
-  const newestNew = userMessages.length ? userMessages[userMessages.length - 1].ts.toLocaleDateString('ro-RO') : '—';
+  const newestTs = allMessages[allMessages.length - 1].tsMs;
+  const resultsDiv = document.getElementById('wa-results');
 
   if (totalNew === 0) {
     resultsDiv.innerHTML = `
-      <div class="alert alert-success">
-        ✅ Niciun mesaj nou față de ultima importare (${new Date(lastTs).toLocaleString('ro-RO')}).
-        <br><span style="font-size:12px;">Fișierul conține ${totalAll} mesaje, toate au fost deja procesate.</span>
-      </div>`;
+      <div class="alert alert-info" style="margin-bottom:1rem;">
+        Niciun mesaj în intervalul selectat.
+      </div>
+      <button class="btn btn-secondary" onclick="handleWAFile(window._waLastFile)">← Schimbă intervalul</button>`;
     return;
   }
 
-  // Afișăm sumar și cerem confirmare înainte de AI
+  const oldestNew = userMessages[0].ts.toLocaleDateString('ro-RO');
+  const newestNew = userMessages[userMessages.length - 1].ts.toLocaleDateString('ro-RO');
+
   resultsDiv.innerHTML = `
     <div class="card" style="margin-bottom:1rem;">
       <div class="card-header" style="background:var(--accent-light);">
-        <div class="card-title" style="color:var(--accent);">📊 Mesaje noi identificate</div>
+        <div class="card-title" style="color:var(--accent);">📊 Mesaje de procesat</div>
       </div>
       <div class="card-body">
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1rem;">
           <div class="stat-card stat-accent" style="padding:0.75rem 1rem;">
-            <div class="stat-label">Mesaje noi</div>
+            <div class="stat-label">Mesaje selectate</div>
             <div class="stat-value" style="font-size:22px;">${totalNew}</div>
             <div class="stat-sub">din ${totalAll} total în fișier</div>
           </div>
           <div class="stat-card stat-blue" style="padding:0.75rem 1rem;">
             <div class="stat-label">De la</div>
             <div class="stat-value" style="font-size:16px;">${oldestNew}</div>
-            <div class="stat-sub">primul mesaj nou</div>
+            <div class="stat-sub">primul mesaj</div>
           </div>
           <div class="stat-card stat-amber" style="padding:0.75rem 1rem;">
             <div class="stat-label">Până la</div>
             <div class="stat-value" style="font-size:16px;">${newestNew}</div>
-            <div class="stat-sub">ultimul mesaj nou</div>
+            <div class="stat-sub">ultimul mesaj</div>
           </div>
         </div>
-
-        <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;margin-bottom:1rem;max-height:200px;overflow-y:auto;font-family:'DM Mono',monospace;">
+        <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;margin-bottom:1rem;max-height:180px;overflow-y:auto;font-family:'DM Mono',monospace;">
           ${userMessages.slice(0, 20).map(m =>
             `<div style="padding:3px 0;border-bottom:1px solid var(--border);">
               <span style="color:var(--text3);">${m.ts.toLocaleDateString('ro-RO')} ${m.ts.toLocaleTimeString('ro-RO',{hour:'2-digit',minute:'2-digit'})}</span>
-              <span style="color:var(--accent);margin:0 6px;">${m.sender}</span>
-              <span>${m.message.replace(/\n/g,' ').substring(0, 100)}${m.message.length > 100 ? '…' : ''}</span>
+              <span style="color:var(--accent);margin:0 6px;">${escapeHtml(m.sender)}</span>
+              <span>${escapeHtml(m.message.replace(/\n/g,' ').substring(0,100))}${m.message.length>100?'…':''}</span>
             </div>`
           ).join('')}
           ${userMessages.length > 20 ? `<div style="color:var(--text3);padding:4px 0;">... și încă ${userMessages.length - 20} mesaje</div>` : ''}
         </div>
-
-        <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="analyzeWAMessages(window._waPendingMessages, window._waNewestTs)">
-          🤖 Extrage pontaje cu AI (${totalNew} mesaje)
-        </button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-secondary" style="flex:0 0 auto;" onclick="handleWAFile(window._waLastFile)">← Înapoi</button>
+          <button class="btn btn-primary" style="flex:1;justify-content:center;" onclick="analyzeWAMessages(window._waPendingMessages, window._waNewestTs)">
+            🤖 Extrage pontaje cu AI (${totalNew} mesaje)
+          </button>
+        </div>
       </div>
     </div>
   `;
 
-  // Stocăm temporar pentru procesare
   window._waPendingMessages = userMessages;
   window._waNewestTs = newestTs;
+}
+
+// ── Helper: celula angajat în tabelul de confirmare ──────────────────────────
+
+function renderWAAngCell(p, i) {
+  if (p.angajat_id) {
+    return `<span style="color:var(--accent);">✓ ${escapeHtml(p.angajat_display)}</span>`;
+  }
+  const parts = (p._raw || '').trim().split(/\s+/);
+  const prenGuess = escapeHtml(parts[0] || '');
+  const numGuess = escapeHtml(parts.slice(1).join(' ') || '');
+  return `
+    <div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:4px;padding:5px 7px;min-width:170px;">
+      <div style="font-size:10px;font-weight:700;color:#b45309;margin-bottom:4px;">🆕 Persoană nouă</div>
+      <div style="display:flex;gap:3px;margin-bottom:5px;">
+        <input id="wa-prenume-${i}" placeholder="Prenume" value="${prenGuess}"
+          style="width:62px;font-size:11px;padding:2px 4px;border:1px solid #d1d5db;border-radius:3px;background:white;">
+        <input id="wa-nnume-${i}" placeholder="Nume" value="${numGuess}"
+          style="width:78px;font-size:11px;padding:2px 4px;border:1px solid #d1d5db;border-radius:3px;background:white;">
+      </div>
+      <label style="font-size:10px;display:flex;align-items:center;gap:4px;cursor:pointer;margin-bottom:4px;font-weight:500;">
+        <input type="checkbox" id="wa-nou-check-${i}" checked> Adaugă în evidențe
+      </label>
+      <select id="wa-ang-${i}" style="font-size:10px;padding:2px 4px;width:100%;border:1px solid #d1d5db;border-radius:3px;background:white;">
+        <option value="">— sau potrivit cu angajat existent —</option>
+        ${angajatiCache.map(a => `<option value="${a.id}">${escapeHtml(a.prenume+' '+a.nume)}</option>`).join('')}
+      </select>
+    </div>`;
 }
 
 // ── Analiză AI ────────────────────────────────────────────────────────────────
@@ -4452,15 +4547,7 @@ Reguli:
               ${extractedPontaje.map((p, i) => `
                 <tr id="wa-row-${i}" style="border-bottom:1px solid var(--border);">
                   <td style="padding:5px 8px;">${new Date(p.data).toLocaleDateString('ro-RO')}</td>
-                  <td style="padding:5px 8px;">
-                    ${p.angajat_id
-                      ? `<span style="color:var(--accent);">✓ ${p.angajat_display}</span>`
-                      : `<select id="wa-ang-${i}" style="font-size:11px;padding:2px 4px;border:1px solid var(--accent2);border-radius:3px;background:#fdf0eb;">
-                          <option value="">— ${p._raw} (negăsit) —</option>
-                          ${angajatiCache.map(a => `<option value="${a.id}">${a.prenume} ${a.nume}</option>`).join('')}
-                        </select>`
-                    }
-                  </td>
+                  <td style="padding:5px 8px;">${renderWAAngCell(p, i)}</td>
                   <td style="padding:5px 8px;">
                     <select id="wa-sant-${i}" style="font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--surface);">
                       <option value="">— fără șantier —</option>
@@ -4515,21 +4602,46 @@ async function saveWAPontaje() {
   btn.textContent = '⏳ Se salvează...';
   btn.disabled = true;
 
-  let saved = 0, errors = 0;
+  let saved = 0, errors = 0, created = 0;
 
   for (let i = 0; i < window._waExtracted.length; i++) {
     const row = document.getElementById('wa-row-' + i);
-    if (!row) continue; // rândul a fost eliminat de utilizator
+    if (!row) continue;
 
     const p = window._waExtracted[i];
-    const angajatId = document.getElementById('wa-ang-' + i)?.value || p.angajat_id;
+    let angajatId = p.angajat_id;
+
+    // Angajat negăsit în DB — verificăm opțiunile userului
+    if (!angajatId) {
+      const selectedExisting = document.getElementById('wa-ang-' + i)?.value;
+      const wantCreate = document.getElementById('wa-nou-check-' + i)?.checked;
+
+      if (selectedExisting) {
+        angajatId = selectedExisting;
+      } else if (wantCreate) {
+        const prenume = (document.getElementById('wa-prenume-' + i)?.value || '').trim();
+        const numeVal = (document.getElementById('wa-nnume-' + i)?.value || '').trim();
+        if (!prenume) { errors++; continue; }
+        const { data: newEmp, error: empErr } = await supabase
+          .from('angajati')
+          .insert({ prenume, nume: numeVal, status: 'activ' })
+          .select('id')
+          .single();
+        if (empErr || !newEmp) { errors++; continue; }
+        angajatId = newEmp.id;
+        angajatiCache.push({ id: newEmp.id, prenume, nume: numeVal });
+        created++;
+      } else {
+        errors++; continue;
+      }
+    }
+
     const santierId = document.getElementById('wa-sant-' + i)?.value || p.santier_id;
     const ore = parseFloat(document.getElementById('wa-ore-' + i)?.value ?? p.ore);
 
     if (!angajatId || !santierId) { errors++; continue; }
 
     try {
-      // Upsert: dacă există pontaj pentru (angajat, data), îl actualizăm
       const { error } = await supabase.from('pontaje').upsert({
         angajat_id: angajatId,
         santier_id: santierId,
@@ -4551,11 +4663,11 @@ async function saveWAPontaje() {
   btn.disabled = false;
   btn.onclick = () => renderImportWhatsapp();
 
-  // Succes message
   document.getElementById('wa-extracted-results').insertAdjacentHTML('beforeend', `
     <div class="alert alert-success" style="margin-top:1rem;">
-      ✅ Import finalizat: <strong>${saved} pontaje salvate</strong>${errors ? ` · ${errors} erori (angajat sau șantier negăsit)` : ''}.
+      ✅ Import finalizat: <strong>${saved} pontaje salvate</strong>${created ? ` · <strong>${created} angajați noi creați</strong>` : ''}${errors ? ` · ${errors} erori` : ''}.
       <br><span style="font-size:12px;">La următoarea importare se vor procesa doar mesajele noi după ${new Date(window._waNewestTsFinal).toLocaleString('ro-RO')}.</span>
+      ${created ? `<br><span style="font-size:12px;color:var(--blue);">👤 Angajații noi au dosar gol — completați datele din secțiunea Angajați.</span>` : ''}
     </div>`);
 }
 
