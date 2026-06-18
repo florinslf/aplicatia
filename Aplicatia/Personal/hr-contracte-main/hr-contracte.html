@@ -2566,8 +2566,10 @@ async function renderSantiere() {
   setTopbar('Șantiere', '<button class="btn btn-primary btn-sm" onclick="openModalSantier()">+ Șantier nou</button>');
   document.getElementById('content').innerHTML = '<div class="loading"><span class="spinner"></span>Se încarcă...</div>';
 
-  const { data: santiere } = await supabase.from('santiere').select('*').order('created_at', { ascending: false });
-  const list = santiere || [];
+  const { data: active } = await supabase.from('santiere').select('*').neq('arhivat', true).order('created_at', { ascending: false });
+  const { data: arhivate } = await supabase.from('santiere').select('*').eq('arhivat', true).order('arhivat_at', { ascending: false });
+  const list = active || [];
+  const arch = arhivate || [];
 
   document.getElementById('content').innerHTML = `
     <div class="card">
@@ -2576,7 +2578,7 @@ async function renderSantiere() {
           <thead><tr><th>Șantier</th><th>Locație</th><th>Status</th><th>Angajați repartizați</th><th>Acțiuni</th></tr></thead>
           <tbody>
             ${list.length === 0 ? `<tr><td colspan="5"><div class="empty" style="padding:2rem;">
-              <h3>Niciun șantier</h3><p>Adăugați primul șantier.</p>
+              <h3>Niciun șantier activ</h3><p>Adăugați primul șantier.</p>
             </div></td></tr>` : ''}
             ${list.map(s => `
               <tr>
@@ -2587,14 +2589,39 @@ async function renderSantiere() {
                 <td>
                   <div style="display:flex;gap:4px;">
                     <button class="btn btn-secondary btn-sm" onclick="openModalSantier('${s.id}','${s.nume}','${s.locatie||''}','${s.status}')">✏️</button>
-                    <button class="btn btn-danger btn-sm" onclick="stergeSantier('${s.id}','${s.nume}')">🗑️</button>
+                    <button class="btn btn-danger btn-sm" onclick="arhiveazaSantier('${s.id}','${s.nume}')">🗂️ Arhivează</button>
                   </div>
                 </td>
               </tr>`).join('')}
           </tbody>
         </table>
       </div>
-    </div>`;
+    </div>
+
+    ${arch.length > 0 ? `
+    <div class="card" style="margin-top:1.5rem;">
+      <div class="folder-title" style="padding:1rem 1.5rem;font-weight:600;border-bottom:1px solid var(--border);">🗂️ Arhivă Șantiere (${arch.length})</div>
+      <div class="danger-zone" style="margin:1rem 1.5rem;">ℹ️ Șantierele arhivate nu mai apar în liste. Apasă <strong>Șterge definitiv</strong> pentru eliminare permanentă.</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Șantier</th><th>Locație</th><th>Arhivat la</th><th>Acțiuni</th></tr></thead>
+          <tbody>
+            ${arch.map(s => `
+              <tr>
+                <td><div class="cell-name" style="opacity:0.7;">${s.nume}</div></td>
+                <td style="font-size:12px;color:var(--text2);">${s.locatie || '—'}</td>
+                <td style="font-size:12px;color:var(--text2);">${s.arhivat_at ? new Date(s.arhivat_at).toLocaleDateString('ro-RO') : '—'}</td>
+                <td>
+                  <div style="display:flex;gap:4px;">
+                    <button class="btn btn-secondary btn-sm" onclick="restaureazaSantier('${s.id}','${s.nume}')">↩️ Restaurează</button>
+                    <button class="btn btn-danger btn-sm" onclick="stergeSantierDefinitiv('${s.id}','${s.nume}')">💀 Șterge definitiv</button>
+                  </div>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : ''}`;
 }
 
 function openModalSantier(id, nume, locatie, status) {
@@ -2624,8 +2651,20 @@ async function saveSantier() {
   renderSantiere();
 }
 
-async function stergeSantier(id, nume) {
-  if (!confirm('Ștergeți șantierul "' + nume + '"?')) return;
+async function arhiveazaSantier(id, nume) {
+  if (!confirm('Arhivezi șantierul "' + nume + '"?\nVa dispărea din lista activă dar poate fi restaurat sau șters definitiv din Arhivă.')) return;
+  await supabase.from('santiere').update({ arhivat: true, arhivat_at: new Date().toISOString() }).eq('id', id);
+  renderSantiere();
+}
+
+async function restaureazaSantier(id, nume) {
+  if (!confirm('Restaurezi șantierul "' + nume + '" înapoi în lista activă?')) return;
+  await supabase.from('santiere').update({ arhivat: false, arhivat_at: null }).eq('id', id);
+  renderSantiere();
+}
+
+async function stergeSantierDefinitiv(id, nume) {
+  if (!confirm('⚠️ Ștergi DEFINITIV șantierul "' + nume + '"?\nAceastă acțiune nu poate fi anulată.')) return;
   await supabase.from('santiere').delete().eq('id', id);
   renderSantiere();
 }
@@ -3977,6 +4016,10 @@ async function genereazaCIMdinDosar() {
 
 // ─── IMPORT PONTAJ DIN WHATSAPP ───────────────────────────────────────────────
 
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 const WA_TS_KEY = 'wa_last_import_ts';   // localStorage key
 const WA_MSGS_KEY = 'wa_last_msgs_hash'; // pentru detectare duplicat
 
@@ -4066,9 +4109,15 @@ function parseWhatsAppMessages(text) {
 
   const patterns = [
     // Românesc Android: dd.mm.yyyy, hh:mm - Sender: msg
-    /^(\d{1,2})\.(\d{1,2})\.(\d{4}),\s+(\d{1,2}):(\d{2})\s*[-–]\s*([^:]+):\s*([\s\S]*?)$/,
-    // iOS cu secunde: [dd.mm.yyyy, hh:mm:ss] Sender: msg
-    /^\[(\d{1,2})\.(\d{1,2})\.(\d{4}),\s+(\d{1,2}):(\d{2})(?::\d{2})?\]\s+([^:]+):\s*([\s\S]*?)$/,
+    /^(\d{1,2})\.(\d{1,2})\.(\d{4}),\s*(\d{1,2}):(\d{2})\s*[-–]\s*([^:]+):\s*([\s\S]*?)$/,
+    // iOS cu punct: [dd.mm.yyyy, hh:mm:ss] Sender: msg
+    /^\[(\d{1,2})\.(\d{1,2})\.(\d{4}),\s*(\d{1,2}):(\d{2})(?::\d{2})?\]\s+([^:]+):\s*([\s\S]*?)$/,
+    // iOS cu slash: [dd/mm/yyyy, hh:mm:ss] Sender: msg
+    /^\[(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2})(?::\d{2})?\]\s+([^:]+):\s*([\s\S]*?)$/,
+    // Android cu slash: dd/mm/yyyy, hh:mm - Sender: msg
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2})\s*[-–]\s*([^:]+):\s*([\s\S]*?)$/,
+    // Android englezesc AM/PM: m/d/yyyy, h:mm AM - Sender: msg
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2})\s*[AP]M\s*[-–]\s*([^:]+):\s*([\s\S]*?)$/,
   ];
 
   // Împărțim pe linii, reunim mesajele multi-linie
@@ -4136,11 +4185,26 @@ async function handleWAFile(file) {
       </div>
     </div>`;
 
-  const text = await file.text();
+  const rawText = await file.text();
+  // Eliminăm BOM-ul UTF-8 dacă există (WhatsApp pe unele telefoane îl adaugă)
+  const text = rawText.replace(/^﻿/, '');
+
   const allMessages = parseWhatsAppMessages(text);
 
   if (allMessages.length === 0) {
-    resultsDiv.innerHTML = `<div class="alert alert-error">Nu am putut recunoaște formatul fișierului WhatsApp. Asigurați-vă că exportați ca text (.txt).</div>`;
+    // Arătăm primele linii brute ca să vedem formatul real
+    const firstLines = text.split('\n').filter(l => l.trim()).slice(0, 5);
+    resultsDiv.innerHTML = `
+      <div class="alert alert-error" style="margin-bottom:1rem;">
+        ❌ Nu am putut recunoaște formatul fișierului WhatsApp.
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title" style="color:var(--accent2);">🔍 Primele linii din fișier (pentru diagnostic)</div></div>
+        <div class="card-body">
+          <pre style="font-size:11px;background:var(--surface2);padding:10px;border-radius:var(--radius-sm);overflow-x:auto;white-space:pre-wrap;word-break:break-all;">${firstLines.map(l => escapeHtml(l)).join('\n')}</pre>
+          <div style="font-size:12px;color:var(--text2);margin-top:8px;">Copiați aceste linii și trimiteți-le pentru a adăuga suport pentru formatul dvs.</div>
+        </div>
+      </div>`;
     return;
   }
 
@@ -4213,7 +4277,7 @@ async function handleWAFile(file) {
           ${userMessages.length > 20 ? `<div style="color:var(--text3);padding:4px 0;">... și încă ${userMessages.length - 20} mesaje</div>` : ''}
         </div>
 
-        <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="analyzeWAMessages(${JSON.stringify(userMessages).replace(/</g,'\\u003c')}, ${newestTs})">
+        <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="analyzeWAMessages(window._waPendingMessages, window._waNewestTs)">
           🤖 Extrage pontaje cu AI (${totalNew} mesaje)
         </button>
       </div>
@@ -4233,8 +4297,9 @@ async function analyzeWAMessages(messages, newestTs) {
 
   // Grupăm mesajele pe zile pentru context mai bun
   const byDay = {};
+  const _padDay = n => String(n).padStart(2,'0');
   for (const m of messages) {
-    const day = m.ts.toISOString().split('T')[0];
+    const day = `${m.ts.getFullYear()}-${_padDay(m.ts.getMonth()+1)}-${_padDay(m.ts.getDate())}`;
     if (!byDay[day]) byDay[day] = [];
     byDay[day].push(m);
   }
@@ -4314,7 +4379,7 @@ Reguli:
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-5',
+          model: 'claude-sonnet-4-6',
           max_tokens: 1500,
           messages: [{ role: 'user', content: prompt }]
         })
@@ -4322,7 +4387,9 @@ Reguli:
 
       const data = await response.json();
       const text = (data.content || []).map(c => c.text || '').join('').trim();
-      const clean = text.replace(/```json|```/g, '').trim();
+      // Extrage JSON fie brut, fie din bloc markdown ```json ... ```
+      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) || text.match(/(\{[\s\S]*\})/);
+      const clean = jsonMatch ? jsonMatch[1].trim() : text.replace(/```(?:json)?/gi, '').trim();
       const result = JSON.parse(clean);
 
       if (dayEl) {
@@ -4422,11 +4489,12 @@ Reguli:
 
 function resolveAngajat(numeComplet) {
   if (!numeComplet) return null;
-  const q = numeComplet.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const _stripDiacr = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const q = _stripDiacr(numeComplet);
   let best = null, bestScore = 0;
   for (const a of angajatiCache) {
-    const full = (a.prenume + ' ' + a.nume).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    const rev = (a.nume + ' ' + a.prenume).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const full = _stripDiacr(a.prenume + ' ' + a.nume);
+    const rev = _stripDiacr(a.nume + ' ' + a.prenume);
     let score = 0;
     if (full === q || rev === q) score = 100;
     else if (full.includes(q) || q.includes(full)) score = 80;
